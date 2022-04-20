@@ -1,40 +1,40 @@
 
 import libusb, strutils, cbor, bytesequtils, tables
 
-let ep_in_addr: uint8 = 0x82
+const ep_in_addr: uint8 = 0x82
+
+type 
+  MessageReceivedCallback = proc(value: CborNode) {.closure.}
+
+  TransferWrapper = object
+    transfer: ptr LibusbTransfer
+    buffer: array[16385, byte]
+  
+  ViaemsConnector = object
+    transfer1: TransferWrapper
+    transfer2: TransferWrapper
+    transfer3: TransferWrapper
+    transfer4: TransferWrapper
+    dev_handle: ptr LibusbDeviceHandle
+    messageReceived: MessageReceivedCallback
+
 
 proc read_cb(transfer: ptr LibusbTransfer) {.fastcall.} =
   let buffer = cast[ptr array[16385, byte]](transfer.buffer)
+  let conn = cast[ptr ViaemsConnector](transfer.userData)
   var inc = @(buffer[])
   var node = parseCbor(inc.toStrBuf)
-  let count = cast[ptr int](transfer.userData)
   if node.kind == cborMap and node.map.hasKey(%"type"):
     let t = node.map[%"type"].text
-    count[] = count[] + 1
-    if count[] %% 10000 == 0:
-      echo count[]
+    conn.messageReceived(node)
   discard libusbSubmitTransfer(transfer)
 
-
-type TransferWrapper = object
-  transfer: ptr LibusbTransfer
-  buffer: array[16385, byte]
-
-proc submit(wrp: var TransferWrapper, devh: ptr LibusbDeviceHandle, count: ptr int) =
+proc submit(conn: var ViaemsConnector, wrp: var TransferWrapper) =
   wrp.transfer = libusbAllocTransfer(0)
-  wrp.transfer.devHandle = devh
-  libusbFillBulkTransfer(wrp.transfer, devh, (char)ep_in_addr, cast[ptr char](
-        addr wrp.buffer[0]), (cint)sizeof(wrp.buffer), read_cb, count, 0)
+  wrp.transfer.devHandle = conn.dev_handle
+  libusbFillBulkTransfer(wrp.transfer, conn.dev_handle, (char)ep_in_addr, cast[ptr char](
+        addr wrp.buffer[0]), (cint)sizeof(wrp.buffer), read_cb, addr conn, 0)
   discard libusbSubmitTransfer(wrp.transfer)
-
-type ViaemsConnector = object
-  transfer1: TransferWrapper
-  transfer2: TransferWrapper
-  transfer3: TransferWrapper
-  transfer4: TransferWrapper
-
-  dev_handle: ptr LibusbDeviceHandle
-  count: int
 
 proc connect(conn: var ViaemsConnector) =
   let r = libusbInit(nil)
@@ -43,7 +43,7 @@ proc connect(conn: var ViaemsConnector) =
   else:
     echo "Success: Initialized libusb"
 
-  let devh = libusbOpenDeviceWithVidPid(nil, 0x0483, 0x5740) 
+  let devh = libusbOpenDeviceWithVidPid(nil, 0x0483, 0x5740)
   if devh.isNil:
     echo "Could not open"
     quit()
@@ -61,18 +61,24 @@ proc connect(conn: var ViaemsConnector) =
       ptr cuchar](addr encoding[0]), (uint16)sizeof(encoding), 0)
 
 
-proc loop(conn: var ViaemsConnector) = 
-  conn.transfer1.submit(conn.dev_handle, conn.count.addr)
-  conn.transfer2.submit(conn.dev_handle, conn.count.addr)
-  conn.transfer3.submit(conn.dev_handle, conn.count.addr)
-  conn.transfer4.submit(conn.dev_handle, conn.count.addr)
+proc loop(conn: var ViaemsConnector, cb: MessageReceivedCallback) =
+  conn.messageReceived = cb
+  conn.submit(conn.transfer1)
+  conn.submit(conn.transfer2)
+  conn.submit(conn.transfer3)
+  conn.submit(conn.transfer4)
 
   while true:
     discard libusbHandleEvents(nil)
 
+
+
+proc cb(n: CborNode) =
+  echo "received: ", n
+
 var conn : ViaemsConnector
 conn.connect()
-conn.loop()
+conn.loop(cb)
 
 # shut down library
 libusbExit(nil)
