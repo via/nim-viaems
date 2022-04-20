@@ -1,5 +1,5 @@
 
-import libusb, strutils, cbor, bytesequtils, tables
+import libusb, cbor, bytesequtils, tables
 
 const ep_in_addr: uint8 = 0x82
 
@@ -25,7 +25,6 @@ proc read_cb(transfer: ptr LibusbTransfer) {.fastcall.} =
   var inc = @(buffer[])
   var node = parseCbor(inc.toStrBuf)
   if node.kind == cborMap and node.map.hasKey(%"type"):
-    let t = node.map[%"type"].text
     conn.messageReceived(node)
   discard libusbSubmitTransfer(transfer)
 
