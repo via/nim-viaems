@@ -1,7 +1,8 @@
 
 import libusb, cbor, bytesequtils, tables
+import threading/channels
 
-const ep_in_addr: uint8 = 0x82
+const ep_in_addr: uint8 = 0x81
 
 type 
   MessageReceivedCallback = proc(value: CborNode) {.closure.}
@@ -12,9 +13,6 @@ type
   
   ViaemsConnector = object
     transfer1: TransferWrapper
-    transfer2: TransferWrapper
-    transfer3: TransferWrapper
-    transfer4: TransferWrapper
     dev_handle: ptr LibusbDeviceHandle
     messageReceived: MessageReceivedCallback
 
@@ -42,7 +40,7 @@ proc connect(conn: var ViaemsConnector) =
   else:
     echo "Success: Initialized libusb"
 
-  let devh = libusbOpenDeviceWithVidPid(nil, 0x0483, 0x5740)
+  let devh = libusbOpenDeviceWithVidPid(nil, 0x1209, 0x2041)
   if devh.isNil:
     echo "Could not open"
     quit()
@@ -63,21 +61,33 @@ proc connect(conn: var ViaemsConnector) =
 proc loop(conn: var ViaemsConnector, cb: MessageReceivedCallback) =
   conn.messageReceived = cb
   conn.submit(conn.transfer1)
-  conn.submit(conn.transfer2)
-  conn.submit(conn.transfer3)
-  conn.submit(conn.transfer4)
 
   while true:
     discard libusbHandleEvents(nil)
 
 
+var ch = newChan[CborNode]()
 
-proc cb(n: CborNode) =
-  echo "received: ", n
+proc getter() =
+  var conn : ViaemsConnector
+  conn.connect()
+  conn.loop(proc (n: CborNode) = ch.send(n))
 
-var conn : ViaemsConnector
-conn.connect()
-conn.loop(cb)
+var gthread : system.Thread[void]
+createThread(gthread, getter)
+
+proc receiver() = 
+  var counter = -50
+  while true:
+    var msg : CborNode
+    ch.recv(msg)
+    if counter mod 10000 == 0:
+      echo msg
+    if counter == 100000:
+      quit QuitSuccess
+    counter += 1
+
+receiver()
 
 # shut down library
 libusbExit(nil)
